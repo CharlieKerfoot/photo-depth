@@ -1,0 +1,22 @@
+{
+  "name": "depth-parallax",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/three": "^0.183.1",
+    "typescript": "~5.9.3",
+    "vite": "^8.0.1",
+    "vitest": "^4.1.0"
+  },
+  "dependencies": {
+    "onnxruntime-web": "^1.24.3",
+    "three": "^0.183.2"
+  }
+}
