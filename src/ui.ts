@@ -225,7 +225,7 @@ export function initUI(
   const header = document.createElement('header');
   header.className = 'dp-header';
   header.innerHTML = `
-    <h1>2.5D</h1>
+    <h1>Photo-Depth</h1>
   `;
 
   viewerSection = document.createElement('div');
