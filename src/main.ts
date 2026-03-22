@@ -6,7 +6,7 @@ import {
 import {
   initUI, setState, setProgress, setError,
   setInferenceTime, getCanvasContainer, showTiltButton,
-  hideTiltButton,
+  hideTiltButton, setOriginalImage,
 } from './ui.ts';
 
 let generation = 0;
@@ -40,18 +40,25 @@ async function processImage(source: File | string) {
     // Load image
     setProgress('Loading image...');
     let img: HTMLImageElement;
+    let previewSrc: string;
     if (source instanceof File) {
       const url = URL.createObjectURL(source);
+      previewSrc = url;
       try {
         img = await loadImageElement(url);
-      } finally {
+      } catch (err) {
         URL.revokeObjectURL(url);
+        throw err;
       }
     } else {
       img = await loadImageElement(source);
+      previewSrc = source;
     }
 
     if (gen !== generation) return;
+
+    // Set original preview for before/after comparison
+    setOriginalImage(previewSrc);
 
     const width = img.naturalWidth;
     const height = img.naturalHeight;
@@ -93,12 +100,11 @@ function init() {
 
   initUI(appEl, {
     onDrop: (file) => processImage(file),
-    onSample: () => processImage('/sample.jpg'),
-    onRetry: () => setState('idle'),
+    onSample: (src) => processImage(src),
     onTiltRequest: async () => {
       const granted = await requestGyroPermission();
       if (!granted) hideTiltButton();
-      else hideTiltButton(); // hide after granting too
+      else hideTiltButton();
     },
   });
 

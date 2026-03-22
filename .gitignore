@@ -4,3 +4,4 @@ dist/
 public/model/*.onnx
 public/sample.jpg
 *.tsbuildinfo
+.gstack/
