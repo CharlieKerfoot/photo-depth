@@ -1,18 +1,10 @@
 export type AppState = 'idle' | 'loading' | 'displaying' | 'error';
 
-const SAMPLES = [
-  { src: '/sample.jpg',  label: 'Mountain Sunset' },
-  { src: '/sample2.jpg', label: 'Foggy Forest' },
-  { src: '/sample3.jpg', label: 'Lake Reflection' },
-  { src: '/sample4.jpg', label: 'Rolling Hills' },
-  { src: '/sample5.jpg', label: 'Mountain Pass' },
-];
+const SAMPLE_SRC = '/sample2.jpg';
 
 let currentState: AppState = 'idle';
 let container: HTMLDivElement;
 
-// Top-level layout elements
-let header: HTMLElement;
 let viewerSection: HTMLDivElement;
 let canvasContainer: HTMLDivElement;
 let originalPreview: HTMLImageElement;
@@ -20,19 +12,17 @@ let overlayBar: HTMLDivElement;
 let loadingOverlay: HTMLDivElement;
 let progressEl: HTMLSpanElement;
 let errorOverlay: HTMLDivElement;
-let pickerSection: HTMLDivElement;
+let pickerRow: HTMLDivElement;
 let fileInput: HTMLInputElement;
 
-// State
 let showingOriginal = false;
-let currentImageSrc: string | null = null;
 
 let onFileSelect: ((file: File) => void) | null = null;
 let onSampleSelect: ((src: string) => void) | null = null;
 let onTiltRequest: (() => void) | null = null;
 
 // ---------------------------------------------------------------------------
-// CSS injection
+// CSS
 // ---------------------------------------------------------------------------
 function injectStyles() {
   const style = document.createElement('style');
@@ -86,20 +76,7 @@ function injectStyles() {
       pointer-events: none;
       transition: opacity 0.2s ease;
     }
-    .dp-original-preview.visible {
-      opacity: 1;
-    }
-
-    .dp-drop-prompt {
-      position: absolute; inset: 0;
-      display: flex; flex-direction: column;
-      align-items: center; justify-content: center;
-      gap: 8px; cursor: pointer;
-      transition: background 0.15s;
-      border-radius: 12px;
-    }
-    .dp-drop-prompt:hover { background: rgba(255,255,255,0.03); }
-    .dp-drop-prompt.drag-over { background: rgba(255,255,255,0.06); }
+    .dp-original-preview.visible { opacity: 1; }
 
     .dp-overlay-bar {
       position: absolute;
@@ -133,10 +110,6 @@ function injectStyles() {
       transition: background 0.15s;
     }
     .dp-btn:hover { background: rgba(255,255,255,0.2); }
-    .dp-btn-primary {
-      background: rgba(255,255,255,0.18);
-      border-color: rgba(255,255,255,0.25);
-    }
 
     .dp-loading-overlay {
       position: absolute; inset: 0;
@@ -154,9 +127,7 @@ function injectStyles() {
       border-radius: 50%;
       animation: spin 0.7s linear infinite;
     }
-    .dp-loading-text {
-      font-size: 14px; color: #999;
-    }
+    .dp-loading-text { font-size: 14px; color: #999; }
 
     .dp-error-overlay {
       position: absolute; inset: 0;
@@ -169,41 +140,19 @@ function injectStyles() {
     }
     .dp-error-msg { font-size: 14px; color: #ff6b6b; }
 
-    .dp-picker {
+    .dp-picker-row {
       max-width: 900px;
       margin: 24px auto 40px;
       padding: 0 24px;
-    }
-    @media (max-width: 960px) {
-      .dp-picker { padding: 0 24px; }
-    }
-    .dp-picker-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 12px;
-    }
-    .dp-picker-header h2 {
-      font-size: 15px;
-      font-weight: 600;
-      color: #aaa;
-    }
-
-    .dp-carousel {
       display: flex;
       gap: 12px;
-      overflow-x: auto;
-      padding-bottom: 8px;
-      scrollbar-width: thin;
-      scrollbar-color: #333 transparent;
     }
-    .dp-carousel::-webkit-scrollbar { height: 6px; }
-    .dp-carousel::-webkit-scrollbar-track { background: transparent; }
-    .dp-carousel::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+    @media (max-width: 960px) {
+      .dp-picker-row { padding: 0 24px; }
+    }
 
     .dp-thumb-card {
-      flex-shrink: 0;
-      width: 160px;
+      flex: 1;
       cursor: pointer;
       border-radius: 8px;
       overflow: hidden;
@@ -227,15 +176,10 @@ function injectStyles() {
       font-size: 11px;
       color: #888;
       text-align: center;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
     }
 
     .dp-upload-card {
-      flex-shrink: 0;
-      width: 160px;
-      height: 132px;
+      flex: 1;
       cursor: pointer;
       border-radius: 8px;
       border: 2px dashed #333;
@@ -246,6 +190,7 @@ function injectStyles() {
       gap: 6px;
       transition: border-color 0.15s, transform 0.15s;
       color: #666;
+      min-height: 132px;
     }
     .dp-upload-card:hover {
       border-color: #555;
@@ -277,22 +222,26 @@ export function initUI(
 
   injectStyles();
 
-  // --- Header ---
-  header = document.createElement('header');
+  const header = document.createElement('header');
   header.className = 'dp-header';
   header.innerHTML = `
-    <h1>Depth Parallax</h1>
-    <p>Turn any photo into an interactive 3D parallax scene</p>
+    <h1>2.5D</h1>
   `;
 
-  // --- Viewer ---
   viewerSection = document.createElement('div');
   viewerSection.className = 'dp-viewer';
 
-  // Drop prompt (idle state)
   const dropPrompt = document.createElement('div');
   dropPrompt.className = 'dp-drop-prompt';
   dropPrompt.id = 'drop-prompt';
+  dropPrompt.style.cssText = `
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 8px; cursor: pointer;
+    transition: background 0.15s;
+    border-radius: 12px;
+  `;
   dropPrompt.innerHTML = `
     <div style="font-size: 36px; opacity: 0.3;">+</div>
     <div style="font-size: 15px; opacity: 0.5;">Drop a photo or pick one below</div>
@@ -310,24 +259,22 @@ export function initUI(
   dropPrompt.addEventListener('click', () => fileInput.click());
   dropPrompt.addEventListener('dragover', (e) => {
     e.preventDefault();
-    dropPrompt.classList.add('drag-over');
+    dropPrompt.style.background = 'rgba(255,255,255,0.06)';
   });
   dropPrompt.addEventListener('dragleave', () => {
-    dropPrompt.classList.remove('drag-over');
+    dropPrompt.style.background = '';
   });
   dropPrompt.addEventListener('drop', (e) => {
     e.preventDefault();
-    dropPrompt.classList.remove('drag-over');
+    dropPrompt.style.background = '';
     const file = e.dataTransfer?.files[0];
     if (file && file.type.startsWith('image/')) onFileSelect?.(file);
   });
 
-  // Canvas container (parallax renders here)
+  // Canvas container
   canvasContainer = document.createElement('div');
   canvasContainer.id = 'canvas-container';
   canvasContainer.style.cssText = 'position:absolute;inset:0;display:none;border-radius:12px;overflow:hidden;';
-
-  // Allow drop on canvas area too
   canvasContainer.addEventListener('dragover', (e) => e.preventDefault());
   canvasContainer.addEventListener('drop', (e) => {
     e.preventDefault();
@@ -335,11 +282,11 @@ export function initUI(
     if (file && file.type.startsWith('image/')) onFileSelect?.(file);
   });
 
-  // Original image preview (for before/after)
+  // Original image preview (before/after)
   originalPreview = document.createElement('img');
   originalPreview.className = 'dp-original-preview';
 
-  // Overlay bar (inference time, before/after, change image)
+  // Overlay bar
   overlayBar = document.createElement('div');
   overlayBar.className = 'dp-overlay-bar';
   overlayBar.innerHTML = `
@@ -354,13 +301,11 @@ export function initUI(
   // Loading overlay
   loadingOverlay = document.createElement('div');
   loadingOverlay.className = 'dp-loading-overlay';
-  const spinner = document.createElement('div');
-  spinner.className = 'dp-spinner';
-  progressEl = document.createElement('span');
-  progressEl.className = 'dp-loading-text';
-  progressEl.textContent = 'Loading...';
-  loadingOverlay.appendChild(spinner);
-  loadingOverlay.appendChild(progressEl);
+  loadingOverlay.innerHTML = `
+    <div class="dp-spinner"></div>
+    <span class="dp-loading-text">Loading...</span>
+  `;
+  progressEl = loadingOverlay.querySelector('.dp-loading-text') as HTMLSpanElement;
 
   // Error overlay
   errorOverlay = document.createElement('div');
@@ -377,49 +322,36 @@ export function initUI(
   viewerSection.appendChild(loadingOverlay);
   viewerSection.appendChild(errorOverlay);
 
-  // --- Picker section ---
-  pickerSection = document.createElement('div');
-  pickerSection.className = 'dp-picker';
+  // --- Picker row: one sample + upload button ---
+  pickerRow = document.createElement('div');
+  pickerRow.className = 'dp-picker-row';
 
-  const pickerHeader = document.createElement('div');
-  pickerHeader.className = 'dp-picker-header';
-  pickerHeader.innerHTML = `<h2>Sample Images</h2>`;
+  const sampleCard = document.createElement('div');
+  sampleCard.className = 'dp-thumb-card';
+  sampleCard.dataset.src = SAMPLE_SRC;
+  sampleCard.innerHTML = `
+    <img src="${SAMPLE_SRC}" alt="Sample" loading="lazy" />
+    <div class="dp-thumb-label">Try Sample</div>
+  `;
+  sampleCard.addEventListener('click', () => {
+    onSampleSelect?.(SAMPLE_SRC);
+  });
 
-  const carousel = document.createElement('div');
-  carousel.className = 'dp-carousel';
-  carousel.id = 'dp-carousel';
-
-  for (const sample of SAMPLES) {
-    const card = document.createElement('div');
-    card.className = 'dp-thumb-card';
-    card.dataset.src = sample.src;
-    card.innerHTML = `
-      <img src="${sample.src}" alt="${sample.label}" loading="lazy" />
-      <div class="dp-thumb-label">${sample.label}</div>
-    `;
-    card.addEventListener('click', () => {
-      onSampleSelect?.(sample.src);
-    });
-    carousel.appendChild(card);
-  }
-
-  // Upload card
   const uploadCard = document.createElement('div');
   uploadCard.className = 'dp-upload-card';
   uploadCard.innerHTML = `
     <div class="dp-upload-icon">+</div>
-    <div class="dp-upload-text">Upload Your Own</div>
+    <div class="dp-upload-text">Your Own Photo</div>
   `;
   uploadCard.addEventListener('click', () => fileInput.click());
-  carousel.appendChild(uploadCard);
 
-  pickerSection.appendChild(pickerHeader);
-  pickerSection.appendChild(carousel);
+  pickerRow.appendChild(sampleCard);
+  pickerRow.appendChild(uploadCard);
 
   // --- Assemble ---
   container.appendChild(header);
   container.appendChild(viewerSection);
-  container.appendChild(pickerSection);
+  container.appendChild(pickerRow);
 
   // --- Wire up overlay bar buttons ---
   const beforeAfterBtn = overlayBar.querySelector('#dp-before-after') as HTMLButtonElement;
@@ -440,7 +372,6 @@ export function initUI(
       beforeAfterBtn.textContent = 'Hold for Original';
     }
   });
-  // Touch support
   beforeAfterBtn.addEventListener('touchstart', (e) => {
     e.preventDefault();
     showingOriginal = true;
@@ -475,8 +406,6 @@ export function setState(state: AppState) {
 
   if (state === 'idle') {
     originalPreview.classList.remove('visible');
-    currentImageSrc = null;
-    updateCarouselActive();
   }
 }
 
@@ -517,18 +446,4 @@ export function getState(): AppState {
 
 export function setOriginalImage(src: string) {
   originalPreview.src = src;
-  currentImageSrc = src;
-  updateCarouselActive();
-}
-
-function updateCarouselActive() {
-  const cards = document.querySelectorAll('.dp-thumb-card');
-  cards.forEach((card) => {
-    const el = card as HTMLElement;
-    if (el.dataset.src === currentImageSrc) {
-      el.classList.add('active');
-    } else {
-      el.classList.remove('active');
-    }
-  });
 }

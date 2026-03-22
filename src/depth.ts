@@ -1,7 +1,7 @@
 import * as ort from 'onnxruntime-web';
 
-const MODEL_URL = '/model/depth_anything_v2_small_q4.onnx';
-const MODEL_FALLBACK_URL = '/model/depth_anything_v2_small_fp16.onnx';
+const MODEL_URL = '/model/depth_anything_v2_large_q4f16.onnx';
+const MODEL_FALLBACK_URL = '/model/depth_anything_v2_base_q4.onnx';
 const MODEL_SIZE = 518;
 const MEAN = [0.485, 0.456, 0.406];
 const STD = [0.229, 0.224, 0.225];

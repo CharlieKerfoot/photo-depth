@@ -1,4 +1,5 @@
 PLAN.md
+CLAUDE.md
 node_modules/
 dist/
 public/model/*.onnx

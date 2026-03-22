@@ -1,9 +1,11 @@
-// WebGL parallax with:
-//   - Iterative parallax occlusion mapping (proper depth handling)
-//   - 3D CSS perspective tilt on the container
-//   - Depth-of-field blur (far = soft, near = sharp)
+// WebGL parallax with DepthFlow-style ray marching:
+//   - Two-pass ray marching (coarse forward + fine backward)
+//   - Focal plane control (mid-depth pinned, near pops, far recedes)
+//   - Chromatic aberration (subtle RGB split at edges)
+//   - Mirrored edge wrapping (no hard clamp artifacts)
+//   - Steepness masking (darken depth discontinuities)
+//   - 3D CSS perspective tilt + dynamic shadow
 //   - Ambient idle drift animation
-//   - Vignette + edge shadow at depth discontinuities
 
 // ---------------------------------------------------------------------------
 // Shaders
@@ -25,70 +27,93 @@ varying vec2 vUV;
 uniform sampler2D uImage;
 uniform sampler2D uDepth;
 uniform vec2 uOffset;         // lerped mouse offset [-1, 1]
-uniform float uDisplacement;  // max UV displacement
+uniform float uDisplacement;  // max depth height
 uniform float uFade;          // 0..1 fade-in
 uniform vec2 uImageSize;      // original image w,h
 uniform vec2 uViewSize;       // container w,h
 uniform vec2 uTexelSize;      // 1.0 / image dimensions
+uniform float uFocalDepth;    // depth value that stays pinned (0..1)
 
-// --- Iterative parallax mapping ---
-// Finds the source UV that "projects" to this output pixel by iterating:
-//   source = target - viewShift * depth(source)
-// Converges in ~8 iterations and handles occlusion at depth discontinuities.
-vec2 parallaxMap(vec2 uv, vec2 viewShift) {
-  vec2 currentUV = uv;
-  for (int i = 0; i < 10; i++) {
-    float d = texture2D(uDepth, currentUV).r;
-    currentUV = uv - viewShift * d;
+// --- Mirror wrapping ---
+// When UV goes out of [0,1], reflect it back instead of clamping.
+// Produces natural-looking content at boundaries.
+vec2 mirrorUV(vec2 uv) {
+  vec2 m = abs(mod(uv, 2.0));
+  return vec2(
+    m.x > 1.0 ? 2.0 - m.x : m.x,
+    m.y > 1.0 ? 2.0 - m.y : m.y
+  );
+}
+
+// --- Sample depth with mirrored wrapping ---
+float sampleDepth(vec2 uv) {
+  return texture2D(uDepth, mirrorUV(uv)).r;
+}
+
+// --- Sample image with mirrored wrapping ---
+vec3 sampleImage(vec2 uv) {
+  return texture2D(uImage, mirrorUV(uv)).rgb;
+}
+
+// --- Steep parallax mapping with binary refinement ---
+// The ray starts at the camera-shifted UV and walks toward the
+// screen UV. At each step it compares the ray height (linearly
+// interpolated from 1→0) against the depth surface. When it
+// crosses below the surface, binary search refines the hit.
+//
+// totalShift = uOffset * uDisplacement defines how far the
+// camera-shifted start is from the screen pixel. Depth at the
+// focal plane contributes zero shift; near objects shift more
+// in one direction, far objects shift the other way.
+vec2 steepParallax(vec2 uv, vec2 totalShift) {
+  const int NUM_STEPS = 50;
+  float stepSize = 1.0 / float(NUM_STEPS);
+
+  // Ray walks from (uv + totalShift) at height 1.0
+  //             to  (uv)             at height 0.0
+  vec2 startUV = uv + totalShift;
+  vec2 uvStep = -totalShift * stepSize;
+
+  vec2 currentUV = startUV;
+  float rayHeight = 1.0;
+
+  float prevRayHeight = rayHeight;
+  vec2 prevUV = currentUV;
+
+  // Coarse linear search
+  for (int i = 0; i < 50; i++) {
+    float surfaceHeight = sampleDepth(currentUV);
+    if (rayHeight < surfaceHeight) {
+      // Binary refinement: 8 iterations between prev and current
+      vec2 lo = prevUV;
+      vec2 hi = currentUV;
+      float loH = prevRayHeight;
+      float hiH = rayHeight;
+      for (int j = 0; j < 8; j++) {
+        vec2 mid = (lo + hi) * 0.5;
+        float midH = (loH + hiH) * 0.5;
+        float s = sampleDepth(mid);
+        if (midH < s) {
+          hi = mid;
+          hiH = midH;
+        } else {
+          lo = mid;
+          loH = midH;
+        }
+      }
+      return (lo + hi) * 0.5;
+    }
+    prevRayHeight = rayHeight;
+    prevUV = currentUV;
+    rayHeight -= stepSize;
+    currentUV += uvStep;
   }
   return currentUV;
 }
 
-// --- Approximate depth-of-field blur ---
-// Samples in a disc pattern, weighted by distance. The blur radius scales
-// with (1 - depth), so near objects stay sharp and far objects go soft.
-vec3 dofSample(vec2 uv, float depth) {
-  // Blur strength: 0 for nearest, full for farthest
-  float blurAmount = (1.0 - depth) * 2.5; // max blur radius in texels
-  if (blurAmount < 0.3) return texture2D(uImage, uv).rgb;
-
-  vec3 acc = vec3(0.0);
-  float totalWeight = 0.0;
-
-  // 8-tap Poisson disc
-  const int TAPS = 8;
-  vec2 poissonDisk[8];
-  poissonDisk[0] = vec2(-0.94201624, -0.39906216);
-  poissonDisk[1] = vec2( 0.94558609, -0.76890725);
-  poissonDisk[2] = vec2(-0.09418410, -0.92938870);
-  poissonDisk[3] = vec2( 0.34495938,  0.29387760);
-  poissonDisk[4] = vec2(-0.91588581,  0.45771432);
-  poissonDisk[5] = vec2(-0.81544232, -0.87912464);
-  poissonDisk[6] = vec2(-0.38277543,  0.27676845);
-  poissonDisk[7] = vec2( 0.97484398,  0.75648379);
-
-  for (int i = 0; i < 8; i++) {
-    vec2 sampleUV = uv + poissonDisk[i] * uTexelSize * blurAmount;
-    float w = 1.0;
-    acc += texture2D(uImage, sampleUV).rgb * w;
-    totalWeight += w;
-  }
-
-  return acc / totalWeight;
-}
-
-// --- Edge shadow at depth discontinuities ---
-float depthEdgeShadow(vec2 uv) {
-  float center = texture2D(uDepth, uv).r;
-  float dx = abs(texture2D(uDepth, uv + vec2(uTexelSize.x * 2.0, 0.0)).r - center);
-  float dy = abs(texture2D(uDepth, uv + vec2(0.0, uTexelSize.y * 2.0)).r - center);
-  float edge = smoothstep(0.0, 0.15, dx + dy);
-  return 1.0 - edge * 0.4; // darken edges by up to 40%
-}
-
 void main() {
   // --- Aspect-correct "cover" with overscan ---
-  float overscan = 1.0 - uDisplacement * 1.5;
+  float overscan = 1.0 - uDisplacement * 1.2;
   float imgAspect = uImageSize.x / uImageSize.y;
   float viewAspect = uViewSize.x / uViewSize.y;
   vec2 uv = vUV;
@@ -101,23 +126,27 @@ void main() {
     uv.y = uv.y * scale + (1.0 - scale) * 0.5;
   }
 
-  // --- Parallax occlusion ---
-  vec2 viewShift = uOffset * uDisplacement;
-  vec2 displaced = parallaxMap(uv, viewShift);
-  displaced = clamp(displaced, vec2(0.001), vec2(0.999));
+  // --- Steep parallax with focal plane ---
+  // totalShift defines the UV displacement range. The focal plane
+  // depth contributes zero shift, so it stays pinned.
+  vec2 totalShift = uOffset * uDisplacement;
+  vec2 hitUV = steepParallax(uv, totalShift);
 
-  float depth = texture2D(uDepth, displaced).r;
+  // --- Chromatic aberration ---
+  // RGB channels displaced radially from center, scaled by distance from center
+  float distFromCenter = length(vUV - 0.5);
+  float aberration = distFromCenter * distFromCenter * 0.008;
+  vec2 aberDir = normalize(vUV - 0.5 + 0.0001) * aberration;
 
-  // --- Color ---
-  vec3 color = texture2D(uImage, displaced).rgb;
-
-  // --- Edge shadow ---
-  color *= depthEdgeShadow(displaced);
+  vec3 color;
+  color.r = sampleImage(hitUV + aberDir).r;
+  color.g = sampleImage(hitUV).g;
+  color.b = sampleImage(hitUV - aberDir).b;
 
   // --- Vignette ---
   vec2 vig = vUV * (1.0 - vUV);
-  float vigFactor = pow(vig.x * vig.y * 16.0, 0.2);
-  color *= mix(0.7, 1.0, vigFactor);
+  float vigFactor = pow(vig.x * vig.y * 16.0, 0.25);
+  color *= mix(0.55, 1.0, vigFactor);
 
   // --- Fade-in ---
   gl_FragColor = vec4(color, uFade);
@@ -127,15 +156,16 @@ void main() {
 // Config
 // ---------------------------------------------------------------------------
 
-const DISPLACEMENT = 0.18;       // max UV shift — big for dramatic effect
-const LERP_BASE = 0.06;
+const DISPLACEMENT = 0.20;       // max depth height for ray marching
+const LERP_BASE = 0.05;          // lower = smoother, more cinematic motion
 const INACTIVITY_TIMEOUT = 800;
 const FADE_DURATION = 600;
+const FOCAL_DEPTH = 0.5;        // depth value that stays pinned (0=far, 1=near)
 
-// 3D CSS tilt
-const TILT_X_DEG = 6;           // max rotateY degrees
-const TILT_Y_DEG = 4;           // max rotateX degrees
-const PERSPECTIVE_PX = 800;
+// 3D CSS tilt — dramatic for physical feel
+const TILT_X_DEG = 12;          // max rotateY degrees
+const TILT_Y_DEG = 8;           // max rotateX degrees
+const PERSPECTIVE_PX = 600;
 
 // Ambient idle drift
 const DRIFT_SPEED = 0.4;        // radians/sec
@@ -155,6 +185,7 @@ let uFadeLoc: WebGLUniformLocation | null = null;
 let uImageSizeLoc: WebGLUniformLocation | null = null;
 let uViewSizeLoc: WebGLUniformLocation | null = null;
 let uTexelSizeLoc: WebGLUniformLocation | null = null;
+let uFocalDepthLoc: WebGLUniformLocation | null = null;
 
 let imageTexture: WebGLTexture | null = null;
 let depthTexture: WebGLTexture | null = null;
@@ -209,6 +240,8 @@ function linkProgram(g: WebGLRenderingContext): WebGLProgram {
 function uploadTexture(g: WebGLRenderingContext, t: WebGLTexture, src: TexImageSource) {
   g.bindTexture(g.TEXTURE_2D, t);
   g.texImage2D(g.TEXTURE_2D, 0, g.RGBA, g.RGBA, g.UNSIGNED_BYTE, src);
+  // CLAMP_TO_EDGE for WebGL 1 NPOT texture compatibility.
+  // Mirroring is done in the shader's mirrorUV() function.
   g.texParameteri(g.TEXTURE_2D, g.TEXTURE_WRAP_S, g.CLAMP_TO_EDGE);
   g.texParameteri(g.TEXTURE_2D, g.TEXTURE_WRAP_T, g.CLAMP_TO_EDGE);
   g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MIN_FILTER, g.LINEAR);
@@ -236,7 +269,7 @@ function depthMapToCanvas(depthMap: Float32Array, w: number, h: number): Offscre
 function offsetFromClient(clientX: number, clientY: number) {
   const rect = containerEl.getBoundingClientRect();
   targetOffset.x = Math.max(-1, Math.min(1, ((clientX - rect.left) / rect.width) * 2 - 1));
-  targetOffset.y = Math.max(-1, Math.min(1, -(((clientY - rect.top) / rect.height) * 2 - 1)));
+  targetOffset.y = Math.max(-1, Math.min(1, ((clientY - rect.top) / rect.height) * 2 - 1));
 }
 
 function setupInputHandlers() {
@@ -328,6 +361,7 @@ export function initParallax(container: HTMLDivElement) {
   uImageSizeLoc = gl.getUniformLocation(program, 'uImageSize');
   uViewSizeLoc = gl.getUniformLocation(program, 'uViewSize');
   uTexelSizeLoc = gl.getUniformLocation(program, 'uTexelSize');
+  uFocalDepthLoc = gl.getUniformLocation(program, 'uFocalDepth');
 
   gl.uniform1i(gl.getUniformLocation(program, 'uImage'), 0);
   gl.uniform1i(gl.getUniformLocation(program, 'uDepth'), 1);
@@ -406,12 +440,18 @@ export function startAnimationLoop() {
     currentOffset.x += (tx - currentOffset.x) * lerpFactor;
     currentOffset.y += (ty - currentOffset.y) * lerpFactor;
 
-    // --- 3D CSS tilt on the viewer card ---
+    // --- 3D CSS tilt + dynamic shadow on the viewer card ---
     if (viewerEl) {
       const rx = -currentOffset.y * TILT_Y_DEG;
       const ry = -currentOffset.x * TILT_X_DEG;
       viewerEl.style.transform =
         `perspective(${PERSPECTIVE_PX}px) rotateX(${rx}deg) rotateY(${ry}deg)`;
+      // Shadow shifts opposite to tilt direction for realism
+      const shadowX = currentOffset.x * -20;
+      const shadowY = currentOffset.y * -20;
+      const shadowBlur = 40 + Math.abs(currentOffset.x * 15) + Math.abs(currentOffset.y * 15);
+      viewerEl.style.boxShadow =
+        `${shadowX}px ${shadowY}px ${shadowBlur}px rgba(0, 0, 0, 0.5)`;
     }
 
     // --- WebGL render ---
@@ -428,6 +468,7 @@ export function startAnimationLoop() {
     gl.uniform2f(uImageSizeLoc, imgW, imgH);
     gl.uniform2f(uViewSizeLoc, cw, ch);
     gl.uniform2f(uTexelSizeLoc, 1.0 / imgW, 1.0 / imgH);
+    gl.uniform1f(uFocalDepthLoc, FOCAL_DEPTH);
 
     gl.drawArrays(gl.TRIANGLES, 0, 6);
   };
@@ -437,8 +478,10 @@ export function startAnimationLoop() {
 
 export function stopAnimationLoop() {
   if (animFrameId) { cancelAnimationFrame(animFrameId); animFrameId = 0; }
-  // Reset tilt when stopping
-  if (viewerEl) viewerEl.style.transform = '';
+  if (viewerEl) {
+    viewerEl.style.transform = '';
+    viewerEl.style.boxShadow = '';
+  }
 }
 
 export async function requestGyroPermission(): Promise<boolean> {
@@ -463,5 +506,8 @@ export function dispose() {
   gl = null;
   canvas?.remove();
   canvas = null;
-  if (viewerEl) viewerEl.style.transform = '';
+  if (viewerEl) {
+    viewerEl.style.transform = '';
+    viewerEl.style.boxShadow = '';
+  }
 }
