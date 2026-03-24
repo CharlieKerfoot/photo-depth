@@ -1,10 +1,8 @@
 // WebGL parallax with DepthFlow-style ray marching:
-//   - Two-pass ray marching (coarse forward + fine backward)
+//   - Steep parallax mapping with binary refinement
 //   - Focal plane control (mid-depth pinned, near pops, far recedes)
-//   - Chromatic aberration (subtle RGB split at edges)
 //   - Mirrored edge wrapping (no hard clamp artifacts)
-//   - Steepness masking (darken depth discontinuities)
-//   - 3D CSS perspective tilt + dynamic shadow
+//   - Subtle vignette
 //   - Ambient idle drift animation
 
 // ---------------------------------------------------------------------------
@@ -113,7 +111,7 @@ vec2 steepParallax(vec2 uv, vec2 totalShift) {
 
 void main() {
   // --- Aspect-correct "cover" with overscan ---
-  float overscan = 1.0 - uDisplacement * 1.2;
+  float overscan = 1.0 - uDisplacement * 1.5;
   float imgAspect = uImageSize.x / uImageSize.y;
   float viewAspect = uViewSize.x / uViewSize.y;
   vec2 uv = vUV;
@@ -132,21 +130,12 @@ void main() {
   vec2 totalShift = uOffset * uDisplacement;
   vec2 hitUV = steepParallax(uv, totalShift);
 
-  // --- Chromatic aberration ---
-  // RGB channels displaced radially from center, scaled by distance from center
-  float distFromCenter = length(vUV - 0.5);
-  float aberration = distFromCenter * distFromCenter * 0.008;
-  vec2 aberDir = normalize(vUV - 0.5 + 0.0001) * aberration;
+  vec3 color = sampleImage(hitUV);
 
-  vec3 color;
-  color.r = sampleImage(hitUV + aberDir).r;
-  color.g = sampleImage(hitUV).g;
-  color.b = sampleImage(hitUV - aberDir).b;
-
-  // --- Vignette ---
+  // --- Subtle vignette ---
   vec2 vig = vUV * (1.0 - vUV);
-  float vigFactor = pow(vig.x * vig.y * 16.0, 0.25);
-  color *= mix(0.55, 1.0, vigFactor);
+  float vigFactor = pow(vig.x * vig.y * 16.0, 0.3);
+  color *= mix(0.75, 1.0, vigFactor);
 
   // --- Fade-in ---
   gl_FragColor = vec4(color, uFade);
@@ -156,20 +145,15 @@ void main() {
 // Config
 // ---------------------------------------------------------------------------
 
-const DISPLACEMENT = 0.20;       // max depth height for ray marching
-const LERP_BASE = 0.05;          // lower = smoother, more cinematic motion
-const INACTIVITY_TIMEOUT = 800;
-const FADE_DURATION = 600;
+const DISPLACEMENT = 0.10;       // max depth height for ray marching (subtle)
+const LERP_BASE = 0.04;          // lower = smoother, more cinematic motion
+const INACTIVITY_TIMEOUT = 1200;
+const FADE_DURATION = 800;
 const FOCAL_DEPTH = 0.5;        // depth value that stays pinned (0=far, 1=near)
 
-// 3D CSS tilt — dramatic for physical feel
-const TILT_X_DEG = 12;          // max rotateY degrees
-const TILT_Y_DEG = 8;           // max rotateX degrees
-const PERSPECTIVE_PX = 600;
-
 // Ambient idle drift
-const DRIFT_SPEED = 0.4;        // radians/sec
-const DRIFT_RADIUS = 0.25;      // offset magnitude when idle
+const DRIFT_SPEED = 0.25;       // radians/sec (gentle)
+const DRIFT_RADIUS = 0.12;      // offset magnitude when idle (subtle)
 
 // ---------------------------------------------------------------------------
 // State
@@ -198,11 +182,11 @@ let currentOffset = { x: 0, y: 0 };
 let gyroOffset = { x: 0, y: 0 };
 let hasGyro = false;
 let inputActive = false;
+let mouseOverViewer = false;
 let lastInputTime = 0;
 let animFrameId = 0;
 let lastTimestamp = 0;
 let containerEl: HTMLDivElement;
-let viewerEl: HTMLElement | null = null; // the .dp-viewer for 3D tilt
 let fadeOpacity = 0;
 let fadeStart = 0;
 
@@ -273,7 +257,19 @@ function offsetFromClient(clientX: number, clientY: number) {
 }
 
 function setupInputHandlers() {
+  // Track mouse only within the viewer area for a controlled effect
+  const viewerEl = containerEl.closest('.dp-viewer') as HTMLElement | null;
+  const hoverTarget = viewerEl ?? containerEl;
+
+  hoverTarget.addEventListener('mouseenter', () => { mouseOverViewer = true; });
+  hoverTarget.addEventListener('mouseleave', () => {
+    mouseOverViewer = false;
+    inputActive = false;
+    lastInputTime = performance.now();
+  });
+
   window.addEventListener('mousemove', (e) => {
+    if (!mouseOverViewer) return;
     offsetFromClient(e.clientX, e.clientY);
     inputActive = true;
     lastInputTime = performance.now();
@@ -323,13 +319,6 @@ function handleResize() {
 
 export function initParallax(container: HTMLDivElement) {
   containerEl = container;
-
-  // Find the .dp-viewer ancestor for 3D CSS tilt
-  viewerEl = container.closest('.dp-viewer') as HTMLElement | null;
-  if (viewerEl) {
-    viewerEl.style.transformStyle = 'preserve-3d';
-    viewerEl.style.transition = 'transform 0.05s ease-out';
-  }
 
   canvas = document.createElement('canvas');
   canvas.width = 0;
@@ -440,20 +429,6 @@ export function startAnimationLoop() {
     currentOffset.x += (tx - currentOffset.x) * lerpFactor;
     currentOffset.y += (ty - currentOffset.y) * lerpFactor;
 
-    // --- 3D CSS tilt + dynamic shadow on the viewer card ---
-    if (viewerEl) {
-      const rx = -currentOffset.y * TILT_Y_DEG;
-      const ry = -currentOffset.x * TILT_X_DEG;
-      viewerEl.style.transform =
-        `perspective(${PERSPECTIVE_PX}px) rotateX(${rx}deg) rotateY(${ry}deg)`;
-      // Shadow shifts opposite to tilt direction for realism
-      const shadowX = currentOffset.x * -20;
-      const shadowY = currentOffset.y * -20;
-      const shadowBlur = 40 + Math.abs(currentOffset.x * 15) + Math.abs(currentOffset.y * 15);
-      viewerEl.style.boxShadow =
-        `${shadowX}px ${shadowY}px ${shadowBlur}px rgba(0, 0, 0, 0.5)`;
-    }
-
     // --- WebGL render ---
     const cw = containerEl.clientWidth;
     const ch = containerEl.clientHeight;
@@ -478,10 +453,6 @@ export function startAnimationLoop() {
 
 export function stopAnimationLoop() {
   if (animFrameId) { cancelAnimationFrame(animFrameId); animFrameId = 0; }
-  if (viewerEl) {
-    viewerEl.style.transform = '';
-    viewerEl.style.boxShadow = '';
-  }
 }
 
 export async function requestGyroPermission(): Promise<boolean> {
@@ -506,8 +477,4 @@ export function dispose() {
   gl = null;
   canvas?.remove();
   canvas = null;
-  if (viewerEl) {
-    viewerEl.style.transform = '';
-    viewerEl.style.boxShadow = '';
-  }
 }
